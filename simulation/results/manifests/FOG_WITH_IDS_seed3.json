@@ -1,0 +1,9 @@
+{
+  "run_label": "FOG_WITH_IDS_seed3",
+  "scenario": "FOG_WITH_IDS",
+  "seed": 3,
+  "max_sim_time_ms": 5000,
+  "git_commit": "a0b2e00",
+  "started_at": "2026-09-18T04:25:55Z",
+  "finished_at": "2026-09-18T04:25:56Z"
+}
