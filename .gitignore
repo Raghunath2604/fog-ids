@@ -1,0 +1,26 @@
+# --- simulation/ (Member B: Java/Maven/iFogSim2) ---
+simulation/target/
+*.class
+*.iml
+.idea/
+
+# --- ml/ (Member A: Python) ---
+ml/**/__pycache__/
+ml/**/*.pyc
+ml/.venv/
+ml/models/*.bin
+ml/models/*.pkl
+ml/models/*.joblib
+ml/datasets/raw/
+# Trained model binaries and raw datasets are excluded from git history per
+# docs/git-workflow.md — download links and file hashes go in ml/README.md
+# instead, and stay small enough to commit.
+
+# --- security-control/ (Member C: Java, shares the simulation build) ---
+security-control/target/
+security-control/**/*.class
+
+# --- shared ---
+.DS_Store
+*.log
+/results/scratch/

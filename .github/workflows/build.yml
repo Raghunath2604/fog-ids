@@ -1,0 +1,36 @@
+name: build
+
+on:
+  pull_request:
+    paths:
+      - 'simulation/**'
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Compile
+        working-directory: simulation
+        run: |
+          find src/main/java -name "*.java" > /tmp/sources.txt
+          CP=$(find lib -name "*.jar" | tr '\n' ':')
+          javac -nowarn -d target/classes -cp "$CP" @/tmp/sources.txt
+
+      - name: Smoke test — one short run of each scenario
+        working-directory: simulation
+        run: |
+          CP="target/classes:$(find lib -name '*.jar' | tr '\n' ':')"
+          for scenario in CLOUD_ONLY FOG_NO_IDS FOG_WITH_IDS; do
+            java -cp "$CP" fogids.sim.RunScenario "$scenario" 1 \
+              /tmp/ci_results.csv /tmp/ci_util.csv 500
+          done
+          echo "All three scenarios completed without error."
