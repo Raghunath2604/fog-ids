@@ -1,0 +1,9 @@
+{
+  "run_label": "CLOUD_ONLY_seed4",
+  "scenario": "CLOUD_ONLY",
+  "seed": 4,
+  "max_sim_time_ms": 5000,
+  "git_commit": "a0b2e00",
+  "started_at": "2026-09-18T04:25:44Z",
+  "finished_at": "2026-09-18T04:25:46Z"
+}
