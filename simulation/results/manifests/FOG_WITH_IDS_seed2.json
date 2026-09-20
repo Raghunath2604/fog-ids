@@ -3,7 +3,7 @@
   "scenario": "FOG_WITH_IDS",
   "seed": 2,
   "max_sim_time_ms": 5000,
-  "git_commit": "a0b2e00",
-  "started_at": "2026-09-18T04:25:53Z",
-  "finished_at": "2026-09-18T04:25:55Z"
+  "git_commit": "7677a2a",
+  "started_at": "2026-09-20T16:11:50Z",
+  "finished_at": "2026-09-20T16:11:51Z"
 }

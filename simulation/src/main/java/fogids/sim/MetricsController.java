@@ -36,14 +36,35 @@ import org.fog.utils.TimeKeeper;
  * as CloudSimTags (a marker interface implemented by the FogEvents enum),
  * not as raw ints. A custom periodic event therefore needs its own small
  * CloudSimTags-implementing enum rather than an arbitrary int constant.
+ *
+ * SAMPLING STRATEGY (revised — see results/NOTES.md item 3 for the full
+ * before/after): an earlier version of this class point-sampled
+ * FogDevice.getLastUtilization() once every 50 ms — which happened to be
+ * exactly Topology.SENSOR_PERIOD_MS. Sampling a periodic bursty signal at
+ * its own period is textbook aliasing: every sample lands at the same
+ * relative phase, so the trace read as a suspiciously clean alternating
+ * 0%/100% pattern regardless of the actual duty cycle. Staggering sensor
+ * phase (Topology.java) helped the underlying traffic but did not fix
+ * this, because the aliasing was between the SAMPLER and the traffic
+ * period, not purely a synchronisation problem at the source.
+ *
+ * The fix here is a genuine time-average: an internal fine-grained tick
+ * (FINE_TICK_MS) accumulates each device's utilisation every 1 ms, and a
+ * separate, coarser interval (REPORT_MS) flushes the mean since the last
+ * flush to the trace. This is robust to any periodicity in the traffic —
+ * it does not depend on picking a "lucky" interval that happens not to
+ * alias, which would be a fragile fix disguised as a robust one.
  */
 public class MetricsController extends Controller {
 
     private enum LocalTags implements CloudSimTags {
-        SAMPLE_UTILIZATION
+        FINE_TICK
     }
 
-    private static final double SAMPLE_INTERVAL_MS = 50.0;
+    /** Internal accumulation tick — fine enough to catch sub-period bursts. */
+    private static final double FINE_TICK_MS = 1.0;
+    /** How often the averaged utilisation is written to the trace. */
+    private static final double REPORT_MS = 25.0;
 
     private final String runLabel;
     private final String scenario;
@@ -52,6 +73,9 @@ public class MetricsController extends Controller {
     private final String utilizationCsvPath;
 
     private final List<String> utilizationRows = new ArrayList<>();
+    private final java.util.Map<String, Double> accumSum = new java.util.HashMap<>();
+    private final java.util.Map<String, Integer> accumCount = new java.util.HashMap<>();
+    private double lastReportTime = 0.0;
 
     public MetricsController(String name, List<FogDevice> fogDevices, List<Sensor> sensors, List<Actuator> actuators,
             String runLabel, String scenario, long seed, String resultsCsvPath, String utilizationCsvPath) {
@@ -66,21 +90,26 @@ public class MetricsController extends Controller {
     @Override
     public void startEntity() {
         super.startEntity();
-        send(getId(), SAMPLE_INTERVAL_MS, LocalTags.SAMPLE_UTILIZATION);
+        send(getId(), FINE_TICK_MS, LocalTags.FINE_TICK);
     }
 
     @Override
     public void processEvent(SimEvent ev) {
-        if (ev.getTag() == LocalTags.SAMPLE_UTILIZATION) {
-            sampleUtilization();
-            // Re-arm unless we're at/past the simulation horizon.
+        if (ev.getTag() == LocalTags.FINE_TICK) {
+            accumulate();
+            if (CloudSim.clock() - lastReportTime >= REPORT_MS) {
+                flushAveragedSample();
+            }
             if (CloudSim.clock() < org.fog.utils.Config.MAX_SIMULATION_TIME) {
-                send(getId(), SAMPLE_INTERVAL_MS, LocalTags.SAMPLE_UTILIZATION);
+                send(getId(), FINE_TICK_MS, LocalTags.FINE_TICK);
             }
             return;
         }
         if (ev.getTag() == FogEvents.STOP_SIMULATION) {
             CloudSim.stopSimulation();
+            if (!accumCount.isEmpty() && accumCount.values().iterator().next() > 0) {
+                flushAveragedSample(); // don't drop a partial final window
+            }
             writeUtilizationTrace();
             writeResultsRow();
             printSummaryToConsole();
@@ -90,14 +119,28 @@ public class MetricsController extends Controller {
         super.processEvent(ev);
     }
 
-    private void sampleUtilization() {
+    private void accumulate() {
+        for (FogDevice device : getFogDevices()) {
+            String name = device.getName();
+            accumSum.merge(name, device.getLastUtilization(), Double::sum);
+            accumCount.merge(name, 1, Integer::sum);
+        }
+    }
+
+    private void flushAveragedSample() {
         double clock = CloudSim.clock();
         for (FogDevice device : getFogDevices()) {
+            String name = device.getName();
+            int count = accumCount.getOrDefault(name, 0);
+            double avg = (count > 0) ? accumSum.get(name) / count : 0.0;
             utilizationRows.add(String.join(",",
                     csv(runLabel), csv(scenario), String.valueOf(seed),
-                    csv(device.getName()), String.format("%.3f", clock),
-                    String.format("%.6f", device.getLastUtilization())));
+                    csv(name), String.format("%.3f", clock),
+                    String.format("%.6f", avg)));
         }
+        accumSum.clear();
+        accumCount.clear();
+        lastReportTime = clock;
     }
 
     private void writeUtilizationTrace() {

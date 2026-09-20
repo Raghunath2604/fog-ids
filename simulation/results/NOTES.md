@@ -14,10 +14,12 @@ pinned utilisation at 100% even with no attack present — which would
 have made any later resource-aware tier-switching demonstration
 meaningless, since there is no "spare" headroom to switch on. MIPS
 values were rescaled by roughly two orders of magnitude so that normal
-load sits at 30-40% utilisation on a fog node, comfortably inside the
-report's "full tier" band (<60%) with real headroom for an attack surge
-to consume. Ratios were preserved; the ratio, not the literal number,
-is what future retuning against Member A's real cost table must keep.
+load sits at a low, non-saturated level — see item 3 below for the
+corrected measurement of what that level actually is; the figure
+originally written here (30-40%) was measured with a sampler later
+found to be broken. Ratios were preserved; the ratio, not the literal
+number, is what future retuning against Member A's real cost table
+must keep.
 
 ## 2. Verdict-logging cost model (fixed 2026, first full run_all.sh pass)
 
@@ -50,24 +52,72 @@ meaningful before that logic exists; it is not the final design.
 See results/results.csv and results/utilization_trace.csv for the
 corrected numbers, and run/run_all.sh to reproduce them.
 
-## 3. Utilization trace is bimodal, not smooth (observed, not yet fixed)
+## 3. Utilization trace was bimodal — root cause was sampler aliasing, not sensor sync (fixed)
 
-`utilization.csv` shows each fog node's sampled utilisation swinging
-between 0.0 and 1.0 rather than settling near a steady value, even
-though the time-averaged mean (~0.485 for a fog node in FOG_WITH_IDS)
-is a sensible, usable figure. Cause: all sensors on a node use the same
-DeterministicDistribution period with no phase offset, so all 15 (or 6)
-sensor/vehicle pairs on a node fire in lockstep every 50 ms — the node
-processes a synchronised burst, then goes idle, and our 50 ms sample
-interval happens to be sampling almost exactly on that cycle.
+`utilization.csv` used to show each fog node's sampled utilisation
+swinging between exactly 0.0 and 1.0 on every single sample, alternating
+almost perfectly. The original diagnosis in this file blamed "all
+sensors fire in lockstep every 50 ms" — that's true, but it isn't the
+real cause, and staggering sensor phase alone (tried first, see below)
+did not fix the alternation.
 
-This is not fixed here for two reasons: first, it is a genuine argument
-for the EWMA smoothing the security-control-plane design already commits
-to (docs from that track state "the monitor acts on a short moving
-average of headroom, not a single instantaneous sample" — this trace is
-the empirical case for why that matters, not merely a defensive
-assumption); second, real V2X beacon traffic is not perfectly
-synchronised either, so staggering sensor phase is a real-world realism
-improvement worth making together with Member C's jitter/timing work on
-attack traffic, rather than patched in isolation here. Tracked as a
-known refinement, not hidden.
+**Actual root cause:** `MetricsController`'s old sampler read
+`FogDevice.getLastUtilization()` once every `SAMPLE_INTERVAL_MS = 50.0`
+— which is *exactly* `Topology.SENSOR_PERIOD_MS`. Sampling a periodic
+signal at its own period is textbook aliasing: every sample lands at the
+same relative phase in the burst/idle cycle, so the trace reads as a
+suspiciously clean alternation regardless of the true duty cycle. This
+is a property of *when you look*, not of *what the sensors are doing*.
+
+**What was tried first and reverted:** staggering each sensor's
+`transmissionStartDelay` across the period (spreading arrivals instead
+of firing all 15 at once) fixed the aliasing appearance by coincidence
+in one quick test, but a full run then showed `FOG_WITH_IDS` and
+`CLOUD_ONLY` cloud execution cost inflating by roughly 100–1000x with no
+clear mechanism — bisected by toggling the stagger on/off with
+everything else held fixed, which confirmed the stagger, not the
+sampling change, was the cause. The likely explanation is a MIPS
+allocation/deallocation accounting quirk in `StreamOperatorScheduler`
+under a staggered-arrival timing pattern it wasn't exercised with
+before, but that wasn't confirmed by stepping through the scheduler
+itself, and it wasn't worth shipping a change built on an unconfirmed
+mechanism. The stagger was reverted; `Topology.java` is unchanged from
+the previous commit. **Flagged for whoever next touches per-tuple
+arrival timing** (most likely Member C, whose attack injectors will
+need well-understood timing semantics for jitter and evasion traffic)
+to investigate properly before relying on staggered or randomised
+arrival patterns.
+
+**Actual fix, kept:** `MetricsController` no longer point-samples.
+It accumulates `getLastUtilization()` on a fine internal tick
+(`FINE_TICK_MS = 1.0`) and writes the *mean* over each 25 ms reporting
+window (`REPORT_MS`). This is robust to aliasing regardless of any
+periodicity in the traffic, because it doesn't depend on picking a
+sampling interval that happens not to collide with the signal's period
+— it integrates instead. The resulting trace is smooth: no more 0/1
+alternation, and the same fix required no changes to `Topology.java`.
+
+**Correction to item 1's calibration claim, above:** the "~30-40%
+normal-load utilisation" figure quoted when the MIPS values were
+rescaled was itself measured using the old, aliased sampler and was
+never real — that number was an artifact of always sampling mid-burst.
+The corrected, time-averaged measurement shows true baseline utilisation
+on fog-2 sits at roughly **3.5-3.9% mean** (range ~0-8%) under normal
+traffic with the current MIPS settings, not 30-40%.
+
+This is not a new problem to fix — it's arguably the *correct* baseline
+for this architecture. The report's own worked example (Section 6)
+frames normal operation as comfortably within budget, with the DDoS
+attack specifically being what pushes a node's load up past the 60%
+and 85% tier-switching thresholds. A system that idles near-empty until
+attacked and only then needs to shed detection depth is the scenario
+the tiering design exists for. What this correction actually means for
+next steps: Member C's attack injectors (not yet built) are what should
+be relied on to demonstrate the tier-switching behaviour under load —
+the current MIPS settings should not be re-inflated to force a "busier"
+baseline just to make idle-state utilisation look more dramatic.
+
+See `results/results.csv` and `results/utilization.csv` for the current
+numbers (headline latency/network/cost figures are unchanged by this
+fix — only the utilisation trace's shape changed), and `run/run_all.sh`
+to reproduce them.
